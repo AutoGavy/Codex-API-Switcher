@@ -17,6 +17,7 @@ add_executable(codex_api_switcher WIN32
     src/main.cpp
     src/config_manager.cpp
     src/config_manager.h
+    app.rc
 )
 
 target_link_libraries(codex_api_switcher PRIVATE raylib)
