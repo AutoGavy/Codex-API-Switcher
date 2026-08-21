@@ -1,0 +1,9 @@
+# Copy this file to %USERPROFILE%/.codex/config.toml or use Codex API Switcher.
+# Leave model_provider unset to use the built-in Default provider and ChatGPT login.
+model = "gpt-5"
+
+[model_providers.openrouter]
+name = "OpenRouter"
+base_url = "https://openrouter.ai/api/v1"
+env_key = "OPENROUTER_API_KEY"
+wire_api = "responses"
