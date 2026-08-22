@@ -1,3 +1,5 @@
 #include <windows.h>
 
+#include "resource.h"
+
 IDI_APP_ICON ICON "coding.ico"

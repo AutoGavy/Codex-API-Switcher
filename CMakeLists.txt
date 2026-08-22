@@ -18,10 +18,11 @@ add_executable(codex_api_switcher WIN32
     src/config_manager.cpp
     src/config_manager.h
     app.rc
+    resource.h
 )
 
 target_link_libraries(codex_api_switcher PRIVATE raylib)
-target_include_directories(codex_api_switcher PRIVATE src)
+target_include_directories(codex_api_switcher PRIVATE src "${CMAKE_CURRENT_SOURCE_DIR}")
 
 if(MSVC)
     target_compile_definitions(codex_api_switcher PRIVATE _CRT_SECURE_NO_WARNINGS)

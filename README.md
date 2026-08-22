@@ -7,7 +7,7 @@ Codex API Switcher is a Windows desktop utility written in C++20 with raylib and
 - Dark, resizable desktop GUI.
 - A fixed, non-removable `Default` provider for Codex's built-in `openai` provider and ChatGPT account login.
 - Add, edit, select, and remove custom providers.
-- Microsoft YaHei bold UI font.
+- Microsoft YaHei regular UI font with SDF and high-DPI rendering.
 - `Ctrl+S` to save and apply changes; `F2` to reveal the configuration file on Windows.
 - Stores API key environment variable names only; never stores API key values.
 - Preserves unrelated TOML tables when updating managed configuration entries.

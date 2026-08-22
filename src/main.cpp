@@ -8,6 +8,30 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#define CloseWindow CodexWin32CloseWindow
+#define ShowCursor CodexWin32ShowCursor
+#define DrawTextA CodexWin32DrawTextA
+#define DrawTextW CodexWin32DrawTextW
+#define DrawTextExA CodexWin32DrawTextExA
+#define DrawTextExW CodexWin32DrawTextExW
+#define Rectangle CodexWin32Rectangle
+#include <windows.h>
+#undef DrawTextEx
+#undef DrawText
+#undef Rectangle
+#undef DrawTextExW
+#undef DrawTextExA
+#undef DrawTextW
+#undef DrawTextA
+#undef ShowCursor
+#undef CloseWindow
+
+#include "resource.h"
+#endif
+
 namespace {
 
 struct Palette {
@@ -40,8 +64,28 @@ struct AppState {
 
 Font gAppFont = {};
 bool gAppFontLoaded = false;
+bool gAppFontUsesSdf = false;
+Shader gAppFontShader = {};
+bool gAppFontShaderLoaded = false;
 constexpr float kUiTextScale = 1.28f;
-constexpr float kBoldOffset = 0.75f;
+constexpr int kFontAtlasSize = 64;
+constexpr int kRoundedSegments = 24;
+
+constexpr const char* kSdfFragmentShader = R"GLSL(#version 330
+in vec2 fragTexCoord;
+in vec4 fragColor;
+
+uniform sampler2D texture0;
+
+out vec4 finalColor;
+
+void main() {
+    float distanceFromOutline = texture(texture0, fragTexCoord).a - 0.5;
+    float distanceChangePerFragment = length(vec2(dFdx(distanceFromOutline), dFdy(distanceFromOutline)));
+    float alpha = smoothstep(-distanceChangePerFragment, distanceChangePerFragment, distanceFromOutline);
+    finalColor = vec4(fragColor.rgb, fragColor.a * alpha);
+}
+)GLSL";
 
 float scaledTextSize(int size) {
     return static_cast<float>(size) * kUiTextScale;
@@ -54,43 +98,99 @@ unsigned int readBigEndian32(const unsigned char* data) {
            static_cast<unsigned int>(data[3]);
 }
 
-Font loadMicrosoftYaHei() {
+unsigned int readBigEndian16(const unsigned char* data) {
+    return (static_cast<unsigned int>(data[0]) << 8U) |
+           static_cast<unsigned int>(data[1]);
+}
+
+void writeBigEndian32(unsigned char* data, unsigned int value) {
+    data[0] = static_cast<unsigned char>((value >> 24U) & 0xffU);
+    data[1] = static_cast<unsigned char>((value >> 16U) & 0xffU);
+    data[2] = static_cast<unsigned char>((value >> 8U) & 0xffU);
+    data[3] = static_cast<unsigned char>(value & 0xffU);
+}
+
+bool extractTrueTypeFace(const unsigned char* collection, int collectionSize,
+                         unsigned int fontOffset, std::vector<unsigned char>& face) {
+    if (collection == nullptr || collectionSize < 12 || fontOffset > static_cast<unsigned int>(collectionSize - 12)) {
+        return false;
+    }
+
+    const unsigned int tableCount = readBigEndian16(collection + fontOffset + 4);
+    const unsigned int recordsEnd = fontOffset + 12U + tableCount * 16U;
+    if (recordsEnd > static_cast<unsigned int>(collectionSize)) {
+        return false;
+    }
+
+    unsigned int faceEnd = recordsEnd;
+    for (unsigned int index = 0; index < tableCount; ++index) {
+        const unsigned char* record = collection + fontOffset + 12U + index * 16U;
+        const unsigned int tableOffset = readBigEndian32(record + 8);
+        const unsigned int tableLength = readBigEndian32(record + 12);
+        if (tableOffset < fontOffset || tableOffset > static_cast<unsigned int>(collectionSize) ||
+            tableLength > static_cast<unsigned int>(collectionSize) - tableOffset) {
+            return false;
+        }
+        faceEnd = std::max(faceEnd, tableOffset + tableLength);
+    }
+
+    face.assign(collection + fontOffset, collection + faceEnd);
+    for (unsigned int index = 0; index < tableCount; ++index) {
+        const unsigned char* sourceRecord = collection + fontOffset + 12U + index * 16U;
+        unsigned char* faceRecord = face.data() + 12U + index * 16U;
+        writeBigEndian32(faceRecord + 8, readBigEndian32(sourceRecord + 8) - fontOffset);
+    }
+    return true;
+}
+
+Font loadMicrosoftYaHei(bool useSdf, bool& usesSdf) {
+    usesSdf = false;
 #ifdef _WIN32
-    constexpr const char* fontPaths[] = {
-        "C:/Windows/Boot/Fonts/msyh_boot.ttf",
-        "C:/Windows/Fonts/msyh.ttc"
-    };
-    for (const char* fontPath : fontPaths) {
-        int dataSize = 0;
-        unsigned char* fileData = LoadFileData(fontPath, &dataSize);
-        if (fileData == nullptr || dataSize <= 0) {
-            continue;
-        }
+    int dataSize = 0;
+    unsigned char* fileData = LoadFileData("C:/Windows/Fonts/msyh.ttc", &dataSize);
+    if (fileData == nullptr || dataSize <= 0) {
+        return {};
+    }
 
-        const unsigned char* fontData = fileData;
-        int fontDataSize = dataSize;
-        if (dataSize >= 16 && std::memcmp(fileData, "ttcf", 4) == 0) {
-            const unsigned int fontCount = readBigEndian32(fileData + 8);
-            const bool validCollection = fontCount > 0 && fontCount <= 128 &&
-                12U + fontCount * 4U <= static_cast<unsigned int>(dataSize);
-            if (!validCollection) {
-                UnloadFileData(fileData);
-                continue;
-            }
-            const unsigned int fontOffset = readBigEndian32(fileData + 12);
-            if (fontOffset >= static_cast<unsigned int>(dataSize)) {
-                UnloadFileData(fileData);
-                continue;
-            }
-            fontData = fileData + fontOffset;
-            fontDataSize = dataSize - static_cast<int>(fontOffset);
+    std::vector<unsigned char> faceData;
+    const unsigned char* fontData = fileData;
+    int fontDataSize = dataSize;
+    if (dataSize >= 16 && std::memcmp(fileData, "ttcf", 4) == 0) {
+        const unsigned int fontCount = readBigEndian32(fileData + 8);
+        const bool validCollection = fontCount > 0 && fontCount <= 128 &&
+            12U + fontCount * 4U <= static_cast<unsigned int>(dataSize);
+        if (!validCollection || !extractTrueTypeFace(fileData, dataSize,
+                                                       readBigEndian32(fileData + 12), faceData)) {
+            UnloadFileData(fileData);
+            return {};
         }
+        fontData = faceData.data();
+        fontDataSize = static_cast<int>(faceData.size());
+    }
 
-        Font font = LoadFontFromMemory(".ttf", fontData, fontDataSize, 32, nullptr, 0);
-        UnloadFileData(fileData);
-        if (IsFontValid(font)) {
-            return font;
+    Font font = {};
+    if (useSdf) {
+        font.baseSize = kFontAtlasSize;
+        font.glyphPadding = 0;
+        font.glyphs = LoadFontData(fontData, fontDataSize, kFontAtlasSize, nullptr, 0,
+                                   FONT_SDF, &font.glyphCount);
+        if (font.glyphs != nullptr) {
+            Image atlas = GenImageFontAtlas(font.glyphs, &font.recs, font.glyphCount,
+                                            kFontAtlasSize, 0, 1);
+            font.texture = LoadTextureFromImage(atlas);
+            UnloadImage(atlas);
         }
+    } else {
+        font = LoadFontFromMemory(".ttf", fontData, fontDataSize, kFontAtlasSize, nullptr, 0);
+    }
+    UnloadFileData(fileData);
+    if (IsFontValid(font)) {
+        SetTextureFilter(font.texture, TEXTURE_FILTER_BILINEAR);
+        usesSdf = useSdf;
+        return font;
+    }
+    if (font.glyphs != nullptr) {
+        UnloadFont(font);
     }
     return {};
 #else
@@ -106,14 +206,17 @@ Color withAlpha(Color color, unsigned char alpha) {
 void drawText(const std::string& text, int x, int y, int size, Color color) {
     if (gAppFontLoaded) {
         const float textSize = scaledTextSize(size);
+        if (gAppFontUsesSdf && gAppFontShaderLoaded) {
+            BeginShaderMode(gAppFontShader);
+        }
         DrawTextEx(gAppFont, text.c_str(), {static_cast<float>(x), static_cast<float>(y)},
                    textSize, 0.0f, color);
-        DrawTextEx(gAppFont, text.c_str(), {static_cast<float>(x) + kBoldOffset, static_cast<float>(y)},
-                   textSize, 0.0f, color);
+        if (gAppFontUsesSdf && gAppFontShaderLoaded) {
+            EndShaderMode();
+        }
     } else {
         const int textSize = static_cast<int>(scaledTextSize(size));
         DrawText(text.c_str(), x, y, textSize, color);
-        DrawText(text.c_str(), x + 1, y, textSize, color);
     }
 }
 
@@ -129,9 +232,9 @@ void drawLabel(const std::string& text, int x, int y, Color color) {
 }
 
 void drawPanel(Rectangle rectangle, Color color, Color outline = {0, 0, 0, 0}) {
-    DrawRectangleRounded(rectangle, 0.08f, 8, color);
+    DrawRectangleRounded(rectangle, 0.08f, kRoundedSegments, color);
     if (outline.a > 0) {
-        DrawRectangleRoundedLines(rectangle, 0.08f, 8, outline);
+        DrawRectangleRoundedLines(rectangle, 0.08f, kRoundedSegments, outline);
     }
 }
 
@@ -530,6 +633,25 @@ void openConfigFolder(const std::string& path) {
 #endif
 }
 
+#ifdef _WIN32
+void applyApplicationIcon() {
+    HWND window = static_cast<HWND>(GetWindowHandle());
+    if (window == nullptr) {
+        return;
+    }
+
+    HICON icon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APP_ICON));
+    if (icon == nullptr) {
+        return;
+    }
+
+    SendMessageW(window, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon));
+    SendMessageW(window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
+    SetClassLongPtrW(window, GCLP_HICON, reinterpret_cast<LONG_PTR>(icon));
+    SetClassLongPtrW(window, GCLP_HICONSM, reinterpret_cast<LONG_PTR>(icon));
+}
+#endif
+
 } // namespace
 
 int main() {
@@ -548,11 +670,20 @@ int main() {
         }
     }
 
-    SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT | FLAG_WINDOW_HIGHDPI | FLAG_MSAA_4X_HINT);
     InitWindow(1200, 760, "Codex API Switcher");
     SetWindowMinSize(960, 640);
-    gAppFont = loadMicrosoftYaHei();
+#ifdef _WIN32
+    applyApplicationIcon();
+#endif
+    gAppFontShader = LoadShaderFromMemory(nullptr, kSdfFragmentShader);
+    gAppFontShaderLoaded = gAppFontShader.id > 0;
+    gAppFont = loadMicrosoftYaHei(gAppFontShaderLoaded, gAppFontUsesSdf);
     gAppFontLoaded = IsFontValid(gAppFont);
+    if (gAppFontShaderLoaded && !gAppFontUsesSdf) {
+        UnloadShader(gAppFontShader);
+        gAppFontShaderLoaded = false;
+    }
     SetTargetFPS(60);
     SetExitKey(KEY_NULL);
 
@@ -567,7 +698,6 @@ int main() {
         drawSidebar(app, palette, height);
         drawMainPanel(app, palette, width, height);
         drawText("Ctrl+S  Apply", 340, height - 28, 12, palette.muted);
-        drawText("config.toml", width - 116, height - 28, 12, palette.muted);
         EndDrawing();
 
         if (IsKeyDown(KEY_LEFT_CONTROL) && IsKeyPressed(KEY_S)) {
@@ -580,6 +710,9 @@ int main() {
     commitEdit(app);
     if (gAppFontLoaded) {
         UnloadFont(gAppFont);
+    }
+    if (gAppFontShaderLoaded) {
+        UnloadShader(gAppFontShader);
     }
     CloseWindow();
     return 0;
