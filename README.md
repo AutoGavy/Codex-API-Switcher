@@ -40,7 +40,10 @@ wire_api = "responses"
 - Windows 10 or Windows 11
 - Visual Studio 2026 with the Desktop development with C++ workload
 - CMake 3.23 or newer
-- A raylib source checkout
+- A raylib 6.0 source checkout for building from source
+
+The published Windows package already contains a statically linked raylib
+build. End users do not need to install raylib.
 
 The default CMake preset expects raylib to be next to this project:
 
@@ -110,7 +113,21 @@ This project is a local configuration editor, not a Codex login client:
 - It does not upload configuration data to a third-party server or include a built-in API key.
 - `Default` relies on the ChatGPT login state managed by Codex itself.
 
-Only source code, build entry points, the license, and sanitized configuration examples should be committed to a public repository. Build trees, `config.toml`, `.env` files, certificates, and key files are covered by `.gitignore`.
+Only source code, build entry points, license files, third-party notices, and
+sanitized configuration examples should be committed to a public repository.
+Build trees, `config.toml`, `.env` files, certificates, and key files are
+covered by `.gitignore`.
+
+## Third-Party Components and Licenses
+
+The application statically links raylib 6.0.0. The raylib build includes GLFW
+3.4 and several permissively licensed components, including stb, miniaudio,
+dr_mp3, dr_flac, dr_wav, cgltf, and cgltf_write. Their copyright notices and
+license terms are included in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)
+and are also included in the release ZIP.
+
+These third-party licenses apply only to the corresponding bundled components.
+They do not replace or modify this project's license in [`LICENSE`](LICENSE).
 
 ## Project Structure
 
@@ -123,9 +140,13 @@ Only source code, build entry points, the license, and sanitized configuration e
 ├─ config.example.toml    # sanitized configuration example
 ├─ CMakeLists.txt
 ├─ CMakePresets.json
-└─ LICENSE
+├─ LICENSE
+└─ THIRD_PARTY_NOTICES.md
 ```
 
 ## License
 
-This project is distributed under the license in [`LICENSE`](LICENSE).
+The Codex API Switcher project is distributed under the GNU Affero General Public
+License, version 3 (AGPLv3), in [`LICENSE`](LICENSE).
+Third-party components are distributed under their respective licenses listed
+in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
